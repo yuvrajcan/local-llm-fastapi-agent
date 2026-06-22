@@ -2,13 +2,20 @@ from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_ollama import OllamaLLM
+from langchain_ollama import ChatOllama
+from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate
+from tools import agent_tools
 import sqlite3
 import time
 
 app = FastAPI(title="Local LLM API", description="API wrapper for local Ollama models")
-llm = OllamaLLM(model="llama3", base_url="http://host.docker.internal:11434")
+llm = ChatOllama(model="llama3.1", temperature=0, base_url="http://127.0.0.1:11434")
 
 class GenerateRequest(BaseModel):
+    prompt:     str
+
+class AgentRequest(BaseModel):
     prompt: str
 
 # 1. Initialize the SQLite Database
@@ -70,3 +77,30 @@ async def generate_stream(request: GenerateRequest):
         async for chunk in llm.astream(request.prompt):
             yield chunk
     return StreamingResponse(stream_generator(), media_type="text/plain")
+
+@app.post("/agent/run")
+async def run_agent(request: AgentRequest):
+    print("🚀🚀🚀 ENDPOINT HIT! ATTEMPTING TO USE LLAMA 3.1 🚀🚀🚀")
+    
+    # 1. Initialize the LLM 
+    llm = ChatOllama(model="llama3.1:latest", temperature=0, base_url="http://127.0.0.1:11434")
+
+    # 2. Build the Agent's Brain (The Prompt Template)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are an advanced Computer Use Agent. You can execute local Python scripts to complete tasks. Always use the appropriate tool when a user asks you to create or write a file."),
+        ("human", "{input}"),
+        ("placeholder", "{agent_scratchpad}"),
+    ])
+
+    # 3. Assemble the Agent
+    agent = create_tool_calling_agent(llm, agent_tools, prompt)
+    
+    # 4. Create the Executor (Verbose=True lets us watch it think in the terminal)
+    agent_executor = AgentExecutor(agent=agent, tools=agent_tools, verbose=True)
+
+    # 5. Run the Agent
+    try:
+        result = await agent_executor.ainvoke({"input": request.prompt})
+        return {"response": result["output"]}
+    except Exception as e:
+        return {"error": str(e)}
